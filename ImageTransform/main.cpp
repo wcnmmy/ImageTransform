@@ -174,7 +174,7 @@ void test()
 
 int main()
 {
-	test();
+	//test();
 	system("pause");
 	return 0;
 }
