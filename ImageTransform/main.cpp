@@ -1,6 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <Windows.h>
+#include <iostream>
+#include <sstream>
+using namespace std;
 
 //
 // 这是背景颜色
@@ -11,38 +14,93 @@ struct Color
 	BYTE red;
 	BYTE green;
 	BYTE blue;
-	int hex();
+	COLORREF hex();
 };
 
-int Color::hex() {
+COLORREF Color::hex() {
 	return (red << 16) + (green << 8) + blue;
 }
 
-void paint(int x,int y,COLORREF color) {
-	HDC hdc = GetDC(NULL);
-	SetPixel(hdc, x, y, color);
-	ReleaseDC(NULL, hdc);
+/**
+* @brief 读取文件内容
+*		请自行释放内存
+* @param fileName 文件名
+* @param lpReaddedSize 实际读取到的大小
+* @return 读取到的内容的缓存区，（请自行释放内存）
+*/
+LPVOID readFormFile(LPCSTR fileName, LPDWORD lpReadedSize)
+{
+	WIN32_FILE_ATTRIBUTE_DATA fileInfo;		// 文件信息
+	DWORD fileSize;							// 文件大小
+
+	HANDLE hFile = CreateFileA(fileName
+		, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+	if (hFile == INVALID_HANDLE_VALUE)
+	{
+		//printf("打开文件失败！\n");
+		return NULL;
+	}
+	// 获取文件大小
+	GetFileAttributesExA(fileName, GetFileExInfoStandard, &fileInfo);
+	fileSize = fileInfo.nFileSizeLow;
+	
+	LPBYTE readBuffer = new BYTE[fileSize];
+	ReadFile(hFile, readBuffer, fileSize, lpReadedSize, NULL);
+	CloseHandle(hFile);
+	return readBuffer;
 }
 
+/**
+* @brief 将指定缓存区的内存写到文件中
+* @param outputFileName 输出的文件名
+* @param buffer 缓存区
+* @param size 要写入的大小
+* @return 实际写入的大小
+*/
+DWORD writeToFile(LPCSTR outputFileName,LPVOID buffer,DWORD size)
+{
+	DWORD dwWriteSize;
+	HANDLE hFile = CreateFileA(outputFileName
+		, GENERIC_WRITE | GENERIC_READ, NULL, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+	BOOL bRet = WriteFile(hFile, buffer, size, &dwWriteSize, NULL);
+	if (bRet)
+	{
+		//printf("文件写入成功！\n");
+	}
+	else
+	{
+		printf("文件写入失败!文件大小:%d\n",size);
+	}
+	CloseHandle(hFile);
+	return size;
+}
+
+/**
+* @brief 获取图片要裁剪的区域
+* @param buffer 图片数据的缓存区
+* @param lpRect 裁剪区域的指针
+*/
 void getRect(LPVOID buffer,LPRECT lpRect)
 {
-	LONG width, height;
-	LPBYTE data;
-	DWORD sizeImage;
+	DWORD	width;			// 原始位图宽度
+	DWORD	height;			// 原始位图高度
+	LPBYTE	colorData;		// 原始位图颜色的缓存区
+	DWORD	colorSize;		// 原始位图颜色数据的大小
+	DWORD	lineSize;		// 每行颜色数据的大小
+
+	// 文件头
 	LPBITMAPFILEHEADER lpFileHeader = (LPBITMAPFILEHEADER)buffer;
-
-	// 图像数据大小
-	sizeImage = lpFileHeader->bfSize - lpFileHeader->bfOffBits;
-	data = (LPBYTE)buffer + lpFileHeader->bfOffBits;
-
-	printf("\n\n");
+	// 信息头
 	LPBITMAPINFOHEADER lpInfoHeader = (LPBITMAPINFOHEADER)((LPBYTE)buffer + sizeof(BITMAPFILEHEADER));
 
-	width = lpInfoHeader->biWidth;
-	height = lpInfoHeader->biHeight;
-
-	// 一行颜色的数据大小，一行颜色有width个颜色。总共有height行颜色
-	int lineSize = sizeImage / height;
+	/**
+	* 获取原始位图信息
+	*/
+	width		= lpInfoHeader->biWidth;
+	height		= lpInfoHeader->biHeight;
+	colorData	= (LPBYTE)buffer + lpFileHeader->bfOffBits;
+	colorSize	= lpFileHeader->bfSize - lpFileHeader->bfOffBits;
+	lineSize	= colorSize / height;
 
 	lpRect->left = width;
 	lpRect->right = 0;
@@ -55,7 +113,7 @@ void getRect(LPVOID buffer,LPRECT lpRect)
 		for (int y = 0; y < height; y++)
 		{
 			int index = y*lineSize + x * 3;
-			Color* color = (Color*)(data + index);
+			Color* color = (Color*)(colorData + index);
 			COLORREF colorref = color->hex();
 			if (colorref != bcColor)
 			{
@@ -73,108 +131,114 @@ void getRect(LPVOID buffer,LPRECT lpRect)
 	}
 }
 
-void writeFile(LPVOID buffer,RECT* rect)
+/**
+* @brief 转换位图信息
+* @return 转换后的位图信息，使用完后记得释放
+*/
+LPVOID transform(LPVOID lpSource, LPRECT lpRect, LPDWORD lpTransformSize)
 {
-	LONG width, height;
-	LPBYTE data;
-	DWORD sizeImage;
+	DWORD	width;				// 原始位图的宽度
+	DWORD	height;				// 原始位图的高度
+	LPBYTE	colorData;			// 原始位图颜色数据缓存区
+	DWORD	colorSize;			// 原始位图颜色数据的大小
+	DWORD	lineSize;			// 原始位图每行颜色数据的大小
 
-	// 文件头
-	LPBITMAPFILEHEADER lpFileHeader = (LPBITMAPFILEHEADER)buffer;
-	// 图像数据大小
-	sizeImage = lpFileHeader->bfSize - lpFileHeader->bfOffBits;
-	data = (LPBYTE)buffer + lpFileHeader->bfOffBits;
-
+								// 文件头
+	LPBITMAPFILEHEADER lpFileHeader = (LPBITMAPFILEHEADER)lpSource;
 	// 信息头
-	LPBITMAPINFOHEADER lpInfoHeader = (LPBITMAPINFOHEADER)((LPBYTE)buffer + sizeof(BITMAPFILEHEADER));
+	LPBITMAPINFOHEADER lpInfoHeader = (LPBITMAPINFOHEADER)((LPBYTE)lpSource + sizeof(BITMAPFILEHEADER));
 
+	/**
+	* 获取原始位图信息
+	*/
 	width = lpInfoHeader->biWidth;
 	height = lpInfoHeader->biHeight;
-	int lineSize = sizeImage / height;
+	colorSize = lpFileHeader->bfSize - lpFileHeader->bfOffBits;
+	colorData = (LPBYTE)lpSource + lpFileHeader->bfOffBits;
+	lineSize = colorSize / height;
 
-	// 修改信息
-	int newWidth = rect->right - rect->left;
-	int newHeight = rect->top - rect->bottom;
-	
-	// 每行颜色的数据大小
-	int newLineSize = newWidth * 3;
+	DWORD newWidth = lpRect->right - lpRect->left;			// 新位图的宽度
+	DWORD newHeight = lpRect->top - lpRect->bottom;			// 新位图的高度
+
+	DWORD newLineSize = newWidth * 3;					// 新位图每行颜色数据的大小
 	if (newLineSize % 4 != 0) {
 		int _tmp = newLineSize % 4;
 		newLineSize += 4 - _tmp;
 	}
-	int newSizeImage = newHeight*newLineSize;
-	// 文件大小
-	int newFileSize = newSizeImage + lpFileHeader->bfOffBits;
-	BYTE* newBuffer = new BYTE[newSizeImage];
+	DWORD newColorSize = newHeight*newLineSize;						// 新位图颜色数据的大小
+	DWORD newFileSize = newColorSize + lpFileHeader->bfOffBits;		// 新位图文件大小
+	BYTE* newColorData = new BYTE[newColorSize];					// 新位图颜色数据缓存区
 
+	/**
+	* 修改文件头和信息头
+	*/
 	lpFileHeader->bfSize = newFileSize;
+	lpFileHeader->bfOffBits = 54;
 	lpInfoHeader->biWidth = newWidth;
 	lpInfoHeader->biHeight = newHeight;
-	lpInfoHeader->biSizeImage = newSizeImage;
-	// 开始遍历
-	for (int x = 0; x < newWidth; x++)
+	lpInfoHeader->biSizeImage = newColorSize;
+
+	// 开始遍历并且填充
+	for (int line = 0; line < newHeight; line++)
 	{
-		for (int y = 0; y < newHeight; y++)
-		{
-			int index = (y+rect->bottom)*lineSize + (x+rect->left) * 3;
-			int newIndex = y*newLineSize + x * 3;
-			newBuffer[newIndex] = ((LPBYTE)data)[index];
-			newBuffer[newIndex + 1] = ((LPBYTE)data)[index + 1];
-			newBuffer[newIndex + 2] = ((LPBYTE)data)[index + 2];
-		}
+		// 逐行填充
+		LPBYTE linePoint = newColorData + (line*newLineSize);
+		LPBYTE sourcePoint = colorData + (line + lpRect->bottom)*lineSize + lpRect->left * 3;
+		CopyMemory(linePoint, sourcePoint, newLineSize);
 	}
-	HANDLE hFile = CreateFileA("D:/FFOutput/output.bmp"
-		, GENERIC_WRITE | GENERIC_READ, NULL, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-	DWORD dwWritenSize = 0;
-	// 照用原来的文件头，只是稍稍修改了
-	BOOL bRet1 = WriteFile(hFile, buffer, lpFileHeader->bfOffBits, &dwWritenSize, NULL);
-	BOOL bRet2 = WriteFile(hFile, newBuffer, newFileSize, &dwWritenSize, NULL);
-	if (bRet1&&bRet2)
-	{
-		printf("文件写入成功！\n");
-	}
-	else
-	{
-		printf("文件写入失败!\n");
-	}
-	CloseHandle(hFile);
+
+	/**
+	* 构建文件缓存并释放相应的内存
+	*/
+	LPBYTE newBmpBuffer = new BYTE[newFileSize];
+	CopyMemory(newBmpBuffer, lpFileHeader, 54);
+	CopyMemory(newBmpBuffer + 54, newColorData, newColorSize);
+	delete[] newColorData;
+	*lpTransformSize = newFileSize;
+
+	// 返回位图数据
+	return newBmpBuffer;
 }
 
-void myReadFile(HANDLE hFile, LPVOID buffer, DWORD readSize)
+void transformBmp(LPCSTR inputFileName,LPCSTR outputFileName)
 {
-	DWORD readedSize;
-	ReadFile(hFile, buffer, readSize, &readedSize, NULL);
+	DWORD size;
 	RECT rect;
-	getRect(buffer,&rect);
-	writeFile(buffer, &rect);
+	LPBYTE buffer = (LPBYTE)readFormFile(inputFileName, &size);
+	getRect(buffer, &rect);
+	LPBYTE newBmpBuffer = (LPBYTE)transform(buffer, &rect, &size);
+	writeToFile(outputFileName, newBmpBuffer, size);
+	delete[] buffer;
+	delete[] newBmpBuffer;
+	Sleep(100);
 }
 
-void test()
+/**
+* @brief 生成位图
+*/
+void generateBmpList()
 {
-	char* filePath = "D:/FFOutput/dinosaur (15).bmp";
-	//filePath = "D:/Develop/tpvillage/cpputil/ImageTransform/ImageTransform/main.cpp";
-	WIN32_FILE_ATTRIBUTE_DATA fileInfo;
-	DWORD fileSize;
-
-	HANDLE hFile = CreateFileA(filePath
-		, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-	if (hFile == INVALID_HANDLE_VALUE) 
+	for (int i = 1; i <= 126; i++)
 	{
-		printf("打开文件失败！\n");
-		return;
-	}
-	GetFileAttributesExA(filePath, GetFileExInfoStandard, &fileInfo);
-	fileSize = fileInfo.nFileSizeLow;
-	printf("file size = %d\n",fileSize);
-	BYTE* buffer = new BYTE[fileSize];
-	myReadFile(hFile, buffer, fileSize);
-	CloseHandle(hFile);
+		stringstream in;
+		in << "C:/Users/Administrator/Desktop/dinosaur-bmp/dinosaur (";
+		in << i;
+		in << ").bmp";
+		string inputFileName = in.str();
 
+		stringstream out;
+		out << "D:/FFOutput/dinosaur/dinosaur";
+		out << i;
+		out << ".bmp";
+		string outputFileName = out.str();
+		transformBmp(inputFileName.c_str(), outputFileName.c_str());
+		printf("生成位图成功：%s\n",outputFileName.c_str());
+	}
 }
 
 int main()
 {
-	//test();
+	generateBmpList();
 	system("pause");
 	return 0;
 }
